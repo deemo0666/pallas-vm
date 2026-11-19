@@ -1,5 +1,5 @@
 Pallas VM: fix swapped LT/LE and LTU/LEU gadgets in the iOS-TCI vector compare.
-Copyright (c) 2026 maao514 (Pallas Agent). SPDX-License-Identifier: GPL-2.0-only
+Copyright (c) 2026 deemo0666 (Pallas Agent). SPDX-License-Identifier: GPL-2.0-only
 
 --- a/tcg/aarch64-tcti/tcg-target.c.inc
 +++ b/tcg/aarch64-tcti/tcg-target.c.inc

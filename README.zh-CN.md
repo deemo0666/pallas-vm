@@ -171,9 +171,9 @@ Linux 客户机里另有 Node.js、Python、ripgrep 等组件，许可证都是 
 
 ## 作者与许可
 
-Pallas VM 由 [maao514](https://github.com/deemo0666) 为 [Pallas Agent](https://github.com/deemo0666/pallasai) 设计和实现，包括上文的 TCTI 修复、快照恢复、原生分流和客户机构建流程。
+Pallas VM 由 [deemo0666](https://github.com/deemo0666) 为 [Pallas Agent](https://github.com/deemo0666/pallasai) 设计和实现，包括上文的 TCTI 修复、快照恢复、原生分流和客户机构建流程。
 
-使用其中任何部分，请保留版权声明，并注明 **「Pallas VM by maao514 (Pallas Agent)」** 和本仓库链接。我们的 QEMU 补丁是 GPL-2.0，脚本是 MIT，文档是 CC BY 4.0，详见 [LICENSE](LICENSE)。Pallas 名称和 logo 不在授权范围内。
+使用其中任何部分，请保留版权声明，并注明 **「Pallas VM by deemo0666 (Pallas Agent)」** 和本仓库链接。我们的 QEMU 补丁是 GPL-2.0，脚本是 MIT，文档是 CC BY 4.0，详见 [LICENSE](LICENSE)。Pallas 名称和 logo 不在授权范围内。
 
 ## 索取源码
 

@@ -171,9 +171,9 @@ The guest also carries Node.js, Python, ripgrep and similar components under per
 
 ## Author and license
 
-Pallas VM is designed and built by [maao514](https://github.com/deemo0666) for [Pallas Agent](https://github.com/deemo0666/pallasai): the TCTI fix, the snapshot-resume path, the native offload and the guest pipeline described above.
+Pallas VM is designed and built by [deemo0666](https://github.com/deemo0666) for [Pallas Agent](https://github.com/deemo0666/pallasai): the TCTI fix, the snapshot-resume path, the native offload and the guest pipeline described above.
 
-If you use any of it, keep the copyright notices and credit **"Pallas VM by maao514 (Pallas Agent)"** with a link to this repository. Our QEMU patch is GPL-2.0, our scripts are MIT, and this documentation is CC BY 4.0; see [LICENSE](LICENSE). The Pallas name and logo are not licensed.
+If you use any of it, keep the copyright notices and credit **"Pallas VM by deemo0666 (Pallas Agent)"** with a link to this repository. Our QEMU patch is GPL-2.0, our scripts are MIT, and this documentation is CC BY 4.0; see [LICENSE](LICENSE). The Pallas name and logo are not licensed.
 
 ## Requesting source
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 maao514 (Pallas Agent). SPDX-License-Identifier: MIT
+# Copyright (c) 2026 deemo0666 (Pallas Agent). SPDX-License-Identifier: MIT
 """Download the Ubuntu source packages behind every binary package in the Pallas Linux guest.
 
 Input: ubuntu/source-packages.txt ("name version" per line). Output: one folder per source package

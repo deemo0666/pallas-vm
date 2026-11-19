@@ -1,4 +1,4 @@
-# Copyright (c) 2026 maao514 (Pallas Agent). SPDX-License-Identifier: GPL-2.0-only
+# Copyright (c) 2026 deemo0666 (Pallas Agent). SPDX-License-Identifier: GPL-2.0-only
 """Fix vector compares in the interpreter of UTM SE 5.0.8's QEMU (qemu 10.0.12-utm).
 
 tcg/aarch64-tcti/tcg-target.c.inc, INDEX_op_cmp_vec: the cases for TCG_COND_LT/LE and LTU/LEU were
