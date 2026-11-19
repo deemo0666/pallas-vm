@@ -4,9 +4,9 @@
 
 <h1 align="center">Pallas VM</h1>
 
-<p align="center"><b>在 iOS 应用沙盒里，无 JIT 运行完整 aarch64 Linux 的虚拟机运行时</b></p>
+<p align="center"><b>A JIT-free virtual machine runtime that runs full aarch64 Linux inside an iOS app sandbox</b></p>
 
-<p align="center">简体中文 · <a href="README.en.md">English</a></p>
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
   <img alt="QEMU" src="https://img.shields.io/badge/QEMU-10.0.12-orange">
@@ -15,98 +15,98 @@
   <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
 </p>
 
-Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallasai) 的执行层：智能体在 iPhone 上要跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
+Pallas VM is the execution layer of [Pallas Agent](https://github.com/deemo0666/pallasai). The shell, Python, npm and git that the agent runs on an iPhone all run in this virtual machine, inside the app's own process. No jailbreak, no remote server, no JIT entitlement.
 
-iOS 不允许普通 App 生成可执行代码（W^X、没有 `MAP_JIT`），常规动态二进制翻译走不通。Pallas VM 在 QEMU 的 TCG 前端之后接 **iOS-TCI 线程代码后端**：客机指令先翻译成 TCG IR，再编排成预编译 gadget 的地址链，由一个间接跳转循环执行。全程只读写数据，不产生新的机器码。
+iOS forbids ordinary apps from generating executable code (W^X, no `MAP_JIT`), so conventional dynamic binary translation is off the table. Pallas VM puts QEMU's TCG front end in front of the **iOS-TCI threaded-code back end**: guest instructions are translated to TCG IR, then laid out as chains of addresses of precompiled gadgets that an indirect-branch loop executes. Only data is ever written; no new machine code is produced.
 
-本仓库收录 Pallas VM 的全部底层修改，以及它所含 GPL/LGPL 组件的完整对应源码。
+This repository holds all of Pallas VM's low-level changes and the complete corresponding source of its GPL/LGPL components.
 
-## 架构
+## Architecture
 
 ```
-┌──────────────────────── Pallas Agent（iOS 进程） ────────────────────────┐
-│  Swift 宿主 ── dlopen ──▶ qemu-aarch64-softmmu.framework                   │
+┌──────────────────────── Pallas Agent (iOS process) ───────────────────────┐
+│  Swift host ── dlopen ──▶ qemu-aarch64-softmmu.framework                   │
 │     │                       qemu_init(argv) / qemu_main_loop()            │
-│     ├── QMP（JSON over pipe）：快照、端口转发、状态                          │
-│     ├── slirp hostfwd：guest 服务 ⇄ 回环端口                               │
-│     └── fw_cfg：一次性启动密钥                                             │
+│     ├── QMP (JSON over pipe): snapshots, port forwarding, state           │
+│     ├── slirp hostfwd: guest services ⇄ loopback ports                    │
+│     └── fw_cfg: one-time launch key                                       │
 │                                                                           │
-│   ┌──────────────── virt 机器 · 2 × vCPU─────────────────┐        │
+│   ┌──────────────────── virt machine · 2 × vCPU ──────────────────┐        │
 │   │ Linux 6.12 virt ── virtio-mmio: blk ×3 · net · 9p · fw_cfg    │        │
-│   │ initramfs（busybox，未压缩）→ 只读 ext4 根（Ubuntu 24.04）       │        │
-│   │ bubblewrap 沙箱（--cap-drop ALL）· tmpfs /tmp · 独立 /root 盘   │        │
+│   │ initramfs (busybox, uncompressed) → read-only ext4 root       │        │
+│   │ (Ubuntu 24.04) · bubblewrap (--cap-drop ALL) · tmpfs · /root  │        │
 │   └───────────────────────────────────────────────────────────────┘        │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 底层工作
+## Low-level work
 
-### 1. TCTI 向量比较 bug（指令级修复）
+### 1. The TCTI vector-compare bug (an instruction-level fix)
 
-上游 `tcg/aarch64-tcti/tcg-target.c.inc` 在 `INDEX_op_cmp_vec` 里把 **LT/LE**、**LTU/LEU** 两对条件对应的 gadget 写反了。后果是客机执行 `cmlt v, #0` 时，值恰好为 0 的元素也被判成真。
+Upstream `tcg/aarch64-tcti/tcg-target.c.inc` swaps the gadgets for the **LT/LE** and **LTU/LEU** condition pairs in `INDEX_op_cmp_vec`. As a result, a guest `cmlt v, #0` reports true for elements that are exactly zero.
 
-这种错误平时看不出来，直到碰上 SIMD 哈希表：Rust `HashMap`（SwissTable）用向量比较匹配控制字节组，比较一出错就会悄悄丢元素，ripgrep 这类程序随机崩溃。
+This goes unnoticed until it meets a SIMD hash table. Rust's `HashMap` (SwissTable) matches control-byte groups with vector compares; with the compare wrong, it silently loses entries, and programs such as ripgrep crash at random.
 
-我们在客机里稳定复现后，从翻译结果回溯到 gadget 选择表，定位了这处错误：
-- 源码层面：[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)，把 `cmgt`/`cmge`、`cmhi`/`cmhs` 两两互换；
-- 二进制层面：在已编译的分支表里交换 4 个表项，共 **8 字节**（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)），与改源码等价，不必重编整个 QEMU。
+We reproduced it reliably in the guest and traced it from the translated code back to the gadget selection table:
+- At source level, [`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch) swaps `cmgt`/`cmge` and `cmhi`/`cmhs` in pairs.
+- At binary level, swapping 4 entries in the compiled branch table, **8 bytes** in all ([`qemu/tcti_fix.py`](qemu/tcti_fix.py)), is equivalent to the source change and needs no rebuild of QEMU.
 
-### 2. 整机快照：冷启动 11 s → 恢复 1.6 s
+### 2. Whole-machine snapshots: 11 s cold boot → 1.6 s resume
 
-纯解释执行下，Linux 冷启动最初要 28 s。经过下面这些优化压到约 11 s：
-- initramfs 只留 busybox 和 15 个必需模块，并且不压缩，免得在模拟器里解压；
-- vCPU 增加到 2 个；
-- TCG 翻译缓存调到 192 MiB。
+Under pure interpretation, Linux first took 28 s to boot cold. These changes brought it to about 11 s:
+- an initramfs holding only busybox and 15 required modules, left uncompressed so the emulated kernel never decompresses it;
+- 2 vCPUs;
+- a 192 MiB TCG translation cache.
 
-之后，在「guest 服务已监听、工作区尚未挂载」这一刻，经 QMP 把整机状态存成约 115 MB 的快照，以后每次直接 `loadvm`，约 **1.6 s** 就能执行命令。
+Then, at the moment "guest service is listening, workspace not yet mounted", the host saves the whole machine over QMP as a snapshot of about 115 MB. Every later launch just runs `loadvm`, and commands run after about **1.6 s**.
 
-快照只在来源全部未变时才用：内核、initramfs、工具盘按内容哈希，QEMU 和宿主框架按链接标识，系统盘按尺寸和时间，状态文件按校验和。任何一项不符就冷启动并重存；载入失败当场复位。为保证快照一致，根文件系统在所有权限档下都只读挂载。
+A snapshot is used only when none of its inputs changed: kernel, initramfs and tools disk by content hash, QEMU and the host framework by linker identity, the system disk by size and time, and the state file by checksum. Any mismatch means a cold boot and a fresh save, and a failed load resets on the spot. To keep snapshots consistent, the root filesystem is mounted read-only at every permission level.
 
-### 3. 启动密钥与隔离
+### 3. Launch key and isolation
 
-- 每次启动生成随机密钥。冷启动时经 **fw_cfg** 传入，initramfs 读取一次后立即卸载 `qemu_fw_cfg` 驱动，再通过文件描述符交给服务；密钥不出现在内核命令行、环境变量或任何文件里。
-- 从快照恢复时，用旧密钥通过 `/resume` 换新密钥，同时重置内核随机数种子，避免多次恢复得到相同的熵状态。
-- guest 服务只接受来自 slirp 网关 `10.0.2.2` 的连接。命令运行在 bubblewrap 里并丢弃全部 capability，不能重挂根、加载模块或读别的进程。
+- Every launch makes a random key. On a cold boot it enters through **fw_cfg**: the initramfs reads it once, unloads the `qemu_fw_cfg` driver right away, and hands the key to the service over a file descriptor. It never appears on the kernel command line, in the environment or in a file.
+- On resume, the host trades the old key for a new one through `/resume` and reseeds the kernel RNG, so repeated resumes never share entropy state.
+- The guest service accepts connections only from the slirp gateway `10.0.2.2`. Commands run inside bubblewrap with every capability dropped, so they cannot remount root, load modules or read other processes.
 
-### 4. 宿主卸载
+### 4. Host offload
 
-TCTI 下的开销主要不在指令翻译（不到 5%），而在 9p 文件访问的往返延迟。所以 `rg`、`grep`、`find`、`sha*sum` 这些遍历文件的命令会被识别出来，改在宿主进程里用 ripgrep 的库原生执行，输出跟客机里运行完全一致。
+Under TCTI, instruction translation is not the main cost (under 5%); the round-trip latency of 9p file access is. So file-walking commands such as `rg`, `grep`, `find` and `sha*sum` are recognised and run natively in the host process on ripgrep's libraries, with output identical to running them in the guest.
 
-### 5. 网络自愈
+### 5. Self-healing networking
 
-iOS 会在后台回收 slirp 的 hostfwd 监听套接字，回收后客机仍在运行，但端口没人应答。宿主经 QMP 的 `hostfwd_remove/add` 原地重建转发，客机不用重启。
+iOS reclaims slirp's hostfwd listening sockets in the background; afterwards the guest keeps running but nothing answers on its port. The host rebuilds the forward in place over QMP with `hostfwd_remove/add`, and the guest never restarts.
 
-## 组件边界
+## Component boundary
 
-- QEMU 编成独立的动态框架，宿主用 `dlopen` 加载，只调用 `qemu_init(argc, argv)` 和 `qemu_main_loop()` 两个入口。
-- 两者之间只通过 QMP 管道和网络端口转发通信。宿主不调用 QEMU 的内部函数，也不把自己的代码编进 QEMU。
-- 客机里的程序只经网络和 9p 与宿主交互。
+- QEMU is a separate dynamic framework. The host loads it with `dlopen` and calls only two entry points: `qemu_init(argc, argv)` and `qemu_main_loop()`.
+- The two communicate only through a QMP pipe and network port forwarding. The host calls no QEMU internals, and none of its code is compiled into QEMU.
+- Programs in the guest reach the host only over the network and 9p.
 
-Pallas Agent 的应用代码不在本仓库，也不受下列许可证约束。
+Pallas Agent's application code is not in this repository and is not covered by the licenses below.
 
-## 仓库内容
+## Repository contents
 
-| 位置 | 内容 |
+| Where | What |
 |---|---|
-| [Releases](../../releases) | 每个组件的上游源码包原样镜像，`SHA256SUMS` 可用来核对 |
-| [`qemu/`](qemu) | TCTI 修复的源码补丁与二进制修补脚本；随 App 分发的许可清单 `UTM-Licenses.plist` |
-| [`qemu/utm-patches/`](qemu/utm-patches) | UTM 5.0.8 的构建脚本、依赖清单和补丁（[v5.0.8 标签](https://github.com/utmapp/UTM/tree/v5.0.8)） |
-| [`guest/`](guest) | 客机所用 Ubuntu 源码包的名称与确切版本 |
-| [`scripts/`](scripts) | 从 Launchpad 重新下载全部 Ubuntu 源码包的脚本 |
-| [`licenses/`](licenses) | GPL-2.0、LGPL-2.1 原文和 QEMU 的许可说明 |
+| [Releases](../../releases) | Unmodified mirrors of each component's upstream source archive, with `SHA256SUMS` |
+| [`qemu/`](qemu) | Source patch and binary patcher for the TCTI fix; the license notice shipped in the app, `UTM-Licenses.plist` |
+| [`qemu/utm-patches/`](qemu/utm-patches) | UTM 5.0.8's build script, dependency list and patches ([v5.0.8 tag](https://github.com/utmapp/UTM/tree/v5.0.8)) |
+| [`guest/`](guest) | Names and exact versions of the Ubuntu source packages in the guest |
+| [`scripts/`](scripts) | A script that re-downloads every Ubuntu source package from Launchpad |
+| [`licenses/`](licenses) | GPL-2.0 and LGPL-2.1 texts and QEMU's license notes |
 
-## 一、QEMU 和它链接的库
+## 1. QEMU and the libraries it links
 
-App 内置的 QEMU 取自 [UTM SE 5.0.8](https://github.com/utmapp/UTM/releases/tag/v5.0.8) 的发布包：QEMU 10.0.12，使用 iOS-TCI 解释器，不需要 JIT。我们只改了 `qemu-aarch64-softmmu` 里的 8 个字节，修正向量比较指令的条件互换问题，否则 Linux 里的 Rust 程序（比如 ripgrep）会随机崩溃。源码补丁见 [`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)。
+The bundled QEMU comes from the [UTM SE 5.0.8](https://github.com/utmapp/UTM/releases/tag/v5.0.8) release: QEMU 10.0.12 with the iOS-TCI interpreter, which needs no JIT. We change only 8 bytes in `qemu-aarch64-softmmu`, fixing swapped conditions in the vector-compare gadgets; without it, Rust programs in the guest (ripgrep, for one) crash at random. The source patch is [`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch).
 
-| App 内的框架 | 上游源码 | 许可证 |
+| Framework in the app | Upstream source | License |
 |---|---|---|
-| qemu-aarch64-softmmu | qemu-10.0.12-utm（[utmapp/qemu@6601422](https://github.com/utmapp/qemu/tree/6601422e1fff2da1376faafb1e4c2c5cdb2d8003)）+ UTM 补丁 + 本仓库补丁 | GPL-2.0 |
+| qemu-aarch64-softmmu | qemu-10.0.12-utm ([utmapp/qemu@6601422](https://github.com/utmapp/qemu/tree/6601422e1fff2da1376faafb1e4c2c5cdb2d8003)) + UTM patches + this repo's patch | GPL-2.0 |
 | crypto.1.1 / ssl.1.1 | openssl-1.1.1b | OpenSSL / SSLeay |
 | gio / glib / gmodule / gobject | glib-2.83.0 | LGPL-2.1+ |
 | gstreamer / gstbase | gstreamer-1.19.1 | LGPL-2.1+ |
 | gstapp | gst-plugins-base-1.19.1 | LGPL-2.1+ |
-| spice-server | spice-0.14.3、spice-protocol-0.14.4 | LGPL-2.1+ |
+| spice-server | spice-0.14.3, spice-protocol-0.14.4 | LGPL-2.1+ |
 | iconv | libiconv-1.16 | LGPL-2.1+ |
 | intl | gettext-0.22.5 | LGPL-2.1+ |
 | slirp | libslirp-v4.9.1 | BSD-3-Clause |
@@ -118,40 +118,40 @@ App 内置的 QEMU 取自 [UTM SE 5.0.8](https://github.com/utmapp/UTM/releases/
 | epoxy | utmapp/libepoxy@bf98587 | MIT |
 | virglrenderer | utmapp/virglrenderer@451505a | MIT |
 | vulkan | osy/Vulkan-Loader@6df8690 | Apache-2.0 |
-| （静态链接进 QEMU） | utmapp/libucontext@9b1d8f0 | ISC |
+| (statically linked into QEMU) | utmapp/libucontext@9b1d8f0 | ISC |
 
-### 构建
+### Building
 
-在 macOS 上安装 Xcode 和 UTM 构建所需的工具（见 UTM 的 [Documentation/Dependencies.md](https://github.com/utmapp/UTM/blob/v5.0.8/Documentation/Dependencies.md)），然后在 Releases 下载 `UTM-v5.0.8.tar.gz` 和各组件源码包：
+Install Xcode and the tools UTM's build needs (see UTM's [Documentation/Dependencies.md](https://github.com/utmapp/UTM/blob/v5.0.8/Documentation/Dependencies.md)), then download `UTM-v5.0.8.tar.gz` and the source archives from Releases:
 
 ```sh
 tar xzf UTM-v5.0.8.tar.gz && cd UTM-5.0.8
-# 把本仓库的修正接在 UTM 的 QEMU 补丁后面，构建脚本会一起应用
+# Append this repo's fix to UTM's QEMU patch; the build script applies both
 cat ../qemu/qemu-tcti-compare.patch >> patches/qemu-10.0.12-utm.patch
-# 预先放好源码包，脚本就不会再联网下载
+# With the archives in place the script does not download them again
 mkdir -p build-iOS-TCI-arm64 && cp ../*.tar.* build-iOS-TCI-arm64/
 ./scripts/build_dependencies.sh -p ios-tci -a arm64
 ```
 
-产物在 `sysroot-iOS-TCI-arm64/Frameworks/`。想替换 App 里的 QEMU，把编好的 `qemu-aarch64-softmmu.framework` 放进 App 包的 `Frameworks/` 并重新签名即可。App 只通过 `qemu_init` 和 `qemu_main_loop` 两个入口调用它。
+The frameworks land in `sysroot-iOS-TCI-arm64/Frameworks/`. To replace the QEMU in the app, put your `qemu-aarch64-softmmu.framework` into the app bundle's `Frameworks/` and re-sign. The app calls it only through the `qemu_init` and `qemu_main_loop` entry points.
 
-## 二、Linux 客户机
+## 2. The Linux guest
 
-| 部分 | 来源 | 许可证 |
+| Part | Source | License |
 |---|---|---|
-| 内核 | Alpine 3.22.8 `linux-virt` 6.12.115-0：`linux-6.12.115.tar.xz` 加 Alpine 的 [`main/linux-lts`](https://gitlab.alpinelinux.org/alpine/aports/-/tree/v3.22.8/main/linux-lts) 配置和补丁 | GPL-2.0 |
-| initramfs 里的 busybox | Alpine 3.22.8 busybox 1.37.0-r20：`busybox-1.37.0.tar.bz2` 加 [`main/busybox`](https://gitlab.alpinelinux.org/alpine/aports/-/tree/v3.22.8/main/busybox) | GPL-2.0 |
-| initramfs 里的 musl | Alpine 3.22.8 | MIT |
-| 系统盘 | Ubuntu Base 24.04.5 arm64，加 bubblewrap、git、curl 及其依赖 | 各包自带，见 `/usr/share/doc/*/copyright` |
+| Kernel | Alpine 3.22.8 `linux-virt` 6.12.115-0: `linux-6.12.115.tar.xz` plus Alpine's [`main/linux-lts`](https://gitlab.alpinelinux.org/alpine/aports/-/tree/v3.22.8/main/linux-lts) config and patches | GPL-2.0 |
+| busybox in the initramfs | Alpine 3.22.8 busybox 1.37.0-r20: `busybox-1.37.0.tar.bz2` plus [`main/busybox`](https://gitlab.alpinelinux.org/alpine/aports/-/tree/v3.22.8/main/busybox) | GPL-2.0 |
+| musl in the initramfs | Alpine 3.22.8 | MIT |
+| System disk | Ubuntu Base 24.04.5 arm64 plus bubblewrap, git, curl and their dependencies | Per package, see `/usr/share/doc/*/copyright` |
 
-系统盘共涉及 78 个 Ubuntu 源码包，名称和确切版本见 [`guest/source-packages.txt`](guest/source-packages.txt)。每个包的 `.dsc`、原始源码和 Debian 补丁都打成一个 `ubuntu-<包名>_<版本>.tar`，放在 Releases 里。也可以运行 `python3 scripts/fetch-ubuntu-sources.py` 直接从 Launchpad 重新下载。
+The system disk draws on 78 Ubuntu source packages, listed with exact versions in [`guest/source-packages.txt`](guest/source-packages.txt). Each package's `.dsc`, original source and Debian changes are packed as one `ubuntu-<name>_<version>.tar` in Releases, or run `python3 scripts/fetch-ubuntu-sources.py` to fetch them again from Launchpad.
 
-Linux 客户机里另有 Node.js、Python、ripgrep 等组件，许可证都是 MIT、PSF、Apache 这类宽松许可证，许可文本随 App 一起分发在客户机里。
+The guest also carries Node.js, Python, ripgrep and similar components under permissive licenses (MIT, PSF, Apache); their license texts ship inside the guest.
 
-## 索取源码
+## Requesting source
 
-本仓库对应 Pallas Agent 0.5.1 (17) 及之后的版本，直到 Releases 里出现新的版本。哪个组件缺了源码，或者对不上 App 里的二进制，请[提 issue](../../issues)。自发布之日起三年内，我们都会补上。
+This repository covers Pallas Agent 0.5.1 (17) and later, until a newer release appears here. If a component's source is missing or does not match the binary in the app, please [open an issue](../../issues). We will provide it for at least three years from each release.
 
 ## Logo
 
-`assets/logo.png` 是 Pallas Agent 的 logo，可以用来介绍或链接 Pallas Agent。它不属于上面任何开源组件，也不适用这些组件的许可证。
+`assets/logo.png` is the Pallas Agent logo. You may use it to refer or link to Pallas Agent. It is not part of any open-source component above, and their licenses do not apply to it.
