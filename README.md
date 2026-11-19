@@ -169,6 +169,12 @@ The system disk draws on 78 Ubuntu source packages, listed with exact versions i
 
 The guest also carries Node.js, Python, ripgrep and similar components under permissive licenses (MIT, PSF, Apache); their license texts ship inside the guest.
 
+## Author and license
+
+Pallas VM is designed and built by [maao514](https://github.com/deemo0666) for [Pallas Agent](https://github.com/deemo0666/pallasai): the TCTI fix, the snapshot-resume path, the native offload and the guest pipeline described above.
+
+If you use any of it, keep the copyright notices and credit **"Pallas VM by maao514 (Pallas Agent)"** with a link to this repository. Our QEMU patch is GPL-2.0, our scripts are MIT, and this documentation is CC BY 4.0; see [LICENSE](LICENSE). The Pallas name and logo are not licensed.
+
 ## Requesting source
 
 This repository covers Pallas Agent 0.5.1 (17) and later, until a newer release appears here. If a component's source is missing or does not match the binary in the app, please [open an issue](../../issues). We will provide it for at least three years from each release.

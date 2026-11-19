@@ -169,6 +169,12 @@ mkdir -p build-iOS-TCI-arm64 && cp ../*.tar.* build-iOS-TCI-arm64/
 
 Linux 客户机里另有 Node.js、Python、ripgrep 等组件，许可证都是 MIT、PSF、Apache 这类宽松许可证，许可文本随 App 一起分发在客户机里。
 
+## 作者与许可
+
+Pallas VM 由 [maao514](https://github.com/deemo0666) 为 [Pallas Agent](https://github.com/deemo0666/pallasai) 设计和实现，包括上文的 TCTI 修复、快照恢复、原生分流和客户机构建流程。
+
+使用其中任何部分，请保留版权声明，并注明 **「Pallas VM by maao514 (Pallas Agent)」** 和本仓库链接。我们的 QEMU 补丁是 GPL-2.0，脚本是 MIT，文档是 CC BY 4.0，详见 [LICENSE](LICENSE)。Pallas 名称和 logo 不在授权范围内。
+
 ## 索取源码
 
 本仓库对应 Pallas Agent 0.5.1 (17) 及之后的版本，直到 Releases 里出现新的版本。哪个组件缺了源码，或者对不上 App 里的二进制，请[提 issue](../../issues)。自发布之日起三年内，我们都会补上。
