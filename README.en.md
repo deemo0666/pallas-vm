@@ -1,23 +1,97 @@
 <p align="center">
-  <img src="assets/logo.png" width="160" alt="Pallas Agent">
+  <img src="assets/logo.png" width="160" alt="Pallas VM">
 </p>
 
-<h1 align="center">Pallas Agent · Open-Source Component Sources</h1>
+<h1 align="center">Pallas VM</h1>
+
+<p align="center"><b>A JIT-free virtual machine runtime that runs full aarch64 Linux inside an iOS app sandbox</b></p>
 
 <p align="center"><a href="README.md">简体中文</a> · English</p>
 
-Pallas Agent is a local personal agent for iPhone. The app carries a small Linux machine, run by QEMU, for executing commands and working with files. Some of the open-source software in that Linux machine and in QEMU is under copyleft licenses such as the GPL and LGPL. This repository provides the **complete corresponding source** for those components, **every change we made**, and build instructions.
+<p align="center">
+  <img alt="QEMU" src="https://img.shields.io/badge/QEMU-10.0.12-orange">
+  <img alt="TCG" src="https://img.shields.io/badge/TCG-iOS--TCI-blue">
+  <img alt="Guest" src="https://img.shields.io/badge/guest-Linux%206.12%20aarch64-black">
+  <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
+</p>
 
-Pallas Agent's own code is not in this repository and is not covered by these licenses. The app talks to QEMU only through command-line arguments and the QMP protocol (see "Component boundary" below).
+Pallas VM is the execution layer of [Pallas Agent](https://github.com/deemo0666/pallasai). The shell, Python, npm and git that the agent runs on an iPhone all run in this virtual machine, inside the app's own process. No jailbreak, no remote server, no JIT entitlement.
 
-## Contents
+iOS forbids ordinary apps from generating executable code (W^X, no `MAP_JIT`), so conventional dynamic binary translation is off the table. Pallas VM puts QEMU's TCG front end in front of the **iOS-TCI threaded-code back end**: guest instructions are translated to TCG IR, then laid out as chains of addresses of precompiled gadgets that an indirect-branch loop executes. Only data is ever written; no new machine code is produced.
+
+This repository holds all of Pallas VM's low-level changes and the complete corresponding source of its GPL/LGPL components.
+
+## Architecture
+
+```
+┌──────────────────────── Pallas Agent (iOS process) ───────────────────────┐
+│  Swift host ── dlopen ──▶ qemu-aarch64-softmmu.framework                   │
+│     │                       qemu_init(argv) / qemu_main_loop()            │
+│     ├── QMP (JSON over pipe): snapshots, port forwarding, state           │
+│     ├── slirp hostfwd: guest services ⇄ loopback ports                    │
+│     └── fw_cfg: one-time launch key                                       │
+│                                                                           │
+│   ┌──────────────────── virt machine · 2 × vCPU ──────────────────┐        │
+│   │ Linux 6.12 virt ── virtio-mmio: blk ×3 · net · 9p · fw_cfg    │        │
+│   │ initramfs (busybox, uncompressed) → read-only ext4 root       │        │
+│   │ (Ubuntu 24.04) · bubblewrap (--cap-drop ALL) · tmpfs · /root  │        │
+│   └───────────────────────────────────────────────────────────────┘        │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+## Low-level work
+
+### 1. The TCTI vector-compare bug (an instruction-level fix)
+
+Upstream `tcg/aarch64-tcti/tcg-target.c.inc` swaps the gadgets for the **LT/LE** and **LTU/LEU** condition pairs in `INDEX_op_cmp_vec`. As a result, a guest `cmlt v, #0` reports true for elements that are exactly zero.
+
+This goes unnoticed until it meets a SIMD hash table. Rust's `HashMap` (SwissTable) matches control-byte groups with vector compares; with the compare wrong, it silently loses entries, and programs such as ripgrep crash at random.
+
+We reproduced it reliably in the guest and traced it from the translated code back to the gadget selection table:
+- At source level, [`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch) swaps `cmgt`/`cmge` and `cmhi`/`cmhs` in pairs.
+- At binary level, swapping 4 entries in the compiled branch table, **8 bytes** in all ([`qemu/tcti_fix.py`](qemu/tcti_fix.py)), is equivalent to the source change and needs no rebuild of QEMU.
+
+### 2. Whole-machine snapshots: 11 s cold boot → 1.6 s resume
+
+Under pure interpretation, Linux first took 28 s to boot cold. These changes brought it to about 11 s:
+- an initramfs holding only busybox and 15 required modules, left uncompressed so the emulated kernel never decompresses it;
+- 2 vCPUs;
+- a 192 MiB TCG translation cache.
+
+Then, at the moment "guest service is listening, workspace not yet mounted", the host saves the whole machine over QMP as a snapshot of about 115 MB. Every later launch just runs `loadvm`, and commands run after about **1.6 s**.
+
+A snapshot is used only when none of its inputs changed: kernel, initramfs and tools disk by content hash, QEMU and the host framework by linker identity, the system disk by size and time, and the state file by checksum. Any mismatch means a cold boot and a fresh save, and a failed load resets on the spot. To keep snapshots consistent, the root filesystem is mounted read-only at every permission level.
+
+### 3. Launch key and isolation
+
+- Every launch makes a random key. On a cold boot it enters through **fw_cfg**: the initramfs reads it once, unloads the `qemu_fw_cfg` driver right away, and hands the key to the service over a file descriptor. It never appears on the kernel command line, in the environment or in a file.
+- On resume, the host trades the old key for a new one through `/resume` and reseeds the kernel RNG, so repeated resumes never share entropy state.
+- The guest service accepts connections only from the slirp gateway `10.0.2.2`. Commands run inside bubblewrap with every capability dropped, so they cannot remount root, load modules or read other processes.
+
+### 4. Host offload
+
+Under TCTI, instruction translation is not the main cost (under 5%); the round-trip latency of 9p file access is. So file-walking commands such as `rg`, `grep`, `find` and `sha*sum` are recognised and run natively in the host process on ripgrep's libraries, with output identical to running them in the guest.
+
+### 5. Self-healing networking
+
+iOS reclaims slirp's hostfwd listening sockets in the background; afterwards the guest keeps running but nothing answers on its port. The host rebuilds the forward in place over QMP with `hostfwd_remove/add`, and the guest never restarts.
+
+## Component boundary
+
+- QEMU is a separate dynamic framework. The host loads it with `dlopen` and calls only two entry points: `qemu_init(argc, argv)` and `qemu_main_loop()`.
+- The two communicate only through a QMP pipe and network port forwarding. The host calls no QEMU internals, and none of its code is compiled into QEMU.
+- Programs in the guest reach the host only over the network and 9p.
+
+Pallas Agent's application code is not in this repository and is not covered by the licenses below.
+
+## Repository contents
 
 | Where | What |
 |---|---|
 | [Releases](../../releases) | Unmodified mirrors of each component's upstream source archive, with `SHA256SUMS` |
-| [`qemu/`](qemu) | Our change to QEMU: `qemu-tcti-compare.patch` and the equivalent binary patcher `tcti_fix.py`; the license notice shipped in the app, `UTM-Licenses.plist` |
-| [`qemu/utm-patches/`](qemu/utm-patches) | The build script, dependency list and patches UTM 5.0.8 was released with, from UTM's [v5.0.8 tag](https://github.com/utmapp/UTM/tree/v5.0.8) |
-| [`guest/`](guest) | The Linux guest's kernel, busybox and Ubuntu package list |
+| [`qemu/`](qemu) | Source patch and binary patcher for the TCTI fix; the license notice shipped in the app, `UTM-Licenses.plist` |
+| [`qemu/utm-patches/`](qemu/utm-patches) | UTM 5.0.8's build script, dependency list and patches ([v5.0.8 tag](https://github.com/utmapp/UTM/tree/v5.0.8)) |
+| [`guest/`](guest) | Names and exact versions of the Ubuntu source packages in the guest |
 | [`scripts/`](scripts) | A script that re-downloads every Ubuntu source package from Launchpad |
 | [`licenses/`](licenses) | GPL-2.0 and LGPL-2.1 texts and QEMU's license notes |
 
@@ -73,12 +147,6 @@ The frameworks land in `sysroot-iOS-TCI-arm64/Frameworks/`. To replace the QEMU 
 The system disk draws on 78 Ubuntu source packages, listed with exact versions in [`guest/source-packages.txt`](guest/source-packages.txt). Each package's `.dsc`, original source and Debian changes are packed as one `ubuntu-<name>_<version>.tar` in Releases, or run `python3 scripts/fetch-ubuntu-sources.py` to fetch them again from Launchpad.
 
 The guest also carries Node.js, Python, ripgrep and similar components under permissive licenses (MIT, PSF, Apache); their license texts ship inside the guest.
-
-## Component boundary
-
-- QEMU is a separate dynamic framework. The app loads it with `dlopen` and calls only `qemu_init(argc, argv)` and `qemu_main_loop()`.
-- The app and QEMU communicate only through a QMP (JSON command) pipe and network port forwarding. The app calls no QEMU internals and none of its code is compiled into QEMU.
-- Programs in the Linux guest run inside the virtual machine and reach the app only over the network and 9p file sharing.
 
 ## Requesting source
 

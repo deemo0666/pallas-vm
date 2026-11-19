@@ -1,23 +1,97 @@
 <p align="center">
-  <img src="assets/logo.png" width="160" alt="Pallas Agent">
+  <img src="assets/logo.png" width="160" alt="Pallas VM">
 </p>
 
-<h1 align="center">Pallas Agent · 开源组件源码</h1>
+<h1 align="center">Pallas VM</h1>
+
+<p align="center"><b>在 iOS 应用沙盒里，无 JIT 运行完整 aarch64 Linux 的虚拟机运行时</b></p>
 
 <p align="center">简体中文 · <a href="README.en.md">English</a></p>
 
-Pallas Agent 是一款 iPhone 上的本地个人助理。App 内置一台小型 Linux，由 QEMU 运行，用来执行命令和处理文件。这台 Linux 和 QEMU 用到的开源软件，有些采用 GPL、LGPL 这类 copyleft 许可证。本仓库提供这些组件的**完整对应源码**、我们做过的**全部修改**，以及构建说明。
+<p align="center">
+  <img alt="QEMU" src="https://img.shields.io/badge/QEMU-10.0.12-orange">
+  <img alt="TCG" src="https://img.shields.io/badge/TCG-iOS--TCI-blue">
+  <img alt="Guest" src="https://img.shields.io/badge/guest-Linux%206.12%20aarch64-black">
+  <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
+</p>
 
-Pallas Agent 自己的代码不在本仓库，也不受这些许可证约束。App 与 QEMU 之间只通过命令行参数和 QMP 协议通信（见下文「组件边界」）。
+Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallasai) 的执行层：智能体在 iPhone 上要跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
 
-## 内容
+iOS 不允许普通 App 生成可执行代码（W^X、没有 `MAP_JIT`），常规动态二进制翻译走不通。Pallas VM 在 QEMU 的 TCG 前端之后接 **iOS-TCI 线程代码后端**：客机指令先翻译成 TCG IR，再编排成预编译 gadget 的地址链，由一个间接跳转循环执行。全程只读写数据，不产生新的机器码。
+
+本仓库收录 Pallas VM 的全部底层修改，以及它所含 GPL/LGPL 组件的完整对应源码。
+
+## 架构
+
+```
+┌──────────────────────── Pallas Agent（iOS 进程） ────────────────────────┐
+│  Swift 宿主 ── dlopen ──▶ qemu-aarch64-softmmu.framework                   │
+│     │                       qemu_init(argv) / qemu_main_loop()            │
+│     ├── QMP（JSON over pipe）：快照、端口转发、状态                          │
+│     ├── slirp hostfwd：guest 服务 ⇄ 回环端口                               │
+│     └── fw_cfg：一次性启动密钥                                             │
+│                                                                           │
+│   ┌──────────────── virt 机器 · 2 × vCPU─────────────────┐        │
+│   │ Linux 6.12 virt ── virtio-mmio: blk ×3 · net · 9p · fw_cfg    │        │
+│   │ initramfs（busybox，未压缩）→ 只读 ext4 根（Ubuntu 24.04）       │        │
+│   │ bubblewrap 沙箱（--cap-drop ALL）· tmpfs /tmp · 独立 /root 盘   │        │
+│   └───────────────────────────────────────────────────────────────┘        │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+## 底层工作
+
+### 1. TCTI 向量比较 bug（指令级修复）
+
+上游 `tcg/aarch64-tcti/tcg-target.c.inc` 在 `INDEX_op_cmp_vec` 里把 **LT/LE**、**LTU/LEU** 两对条件对应的 gadget 写反了。后果是客机执行 `cmlt v, #0` 时，值恰好为 0 的元素也被判成真。
+
+这种错误平时看不出来，直到碰上 SIMD 哈希表：Rust `HashMap`（SwissTable）用向量比较匹配控制字节组，比较一出错就会悄悄丢元素，ripgrep 这类程序随机崩溃。
+
+我们在客机里稳定复现后，从翻译结果回溯到 gadget 选择表，定位了这处错误：
+- 源码层面：[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)，把 `cmgt`/`cmge`、`cmhi`/`cmhs` 两两互换；
+- 二进制层面：在已编译的分支表里交换 4 个表项，共 **8 字节**（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)），与改源码等价，不必重编整个 QEMU。
+
+### 2. 整机快照：冷启动 11 s → 恢复 1.6 s
+
+纯解释执行下，Linux 冷启动最初要 28 s。经过下面这些优化压到约 11 s：
+- initramfs 只留 busybox 和 15 个必需模块，并且不压缩，免得在模拟器里解压；
+- vCPU 增加到 2 个；
+- TCG 翻译缓存调到 192 MiB。
+
+之后，在「guest 服务已监听、工作区尚未挂载」这一刻，经 QMP 把整机状态存成约 115 MB 的快照，以后每次直接 `loadvm`，约 **1.6 s** 就能执行命令。
+
+快照只在来源全部未变时才用：内核、initramfs、工具盘按内容哈希，QEMU 和宿主框架按链接标识，系统盘按尺寸和时间，状态文件按校验和。任何一项不符就冷启动并重存；载入失败当场复位。为保证快照一致，根文件系统在所有权限档下都只读挂载。
+
+### 3. 启动密钥与隔离
+
+- 每次启动生成随机密钥。冷启动时经 **fw_cfg** 传入，initramfs 读取一次后立即卸载 `qemu_fw_cfg` 驱动，再通过文件描述符交给服务；密钥不出现在内核命令行、环境变量或任何文件里。
+- 从快照恢复时，用旧密钥通过 `/resume` 换新密钥，同时重置内核随机数种子，避免多次恢复得到相同的熵状态。
+- guest 服务只接受来自 slirp 网关 `10.0.2.2` 的连接。命令运行在 bubblewrap 里并丢弃全部 capability，不能重挂根、加载模块或读别的进程。
+
+### 4. 宿主卸载
+
+TCTI 下的开销主要不在指令翻译（不到 5%），而在 9p 文件访问的往返延迟。所以 `rg`、`grep`、`find`、`sha*sum` 这些遍历文件的命令会被识别出来，改在宿主进程里用 ripgrep 的库原生执行，输出跟客机里运行完全一致。
+
+### 5. 网络自愈
+
+iOS 会在后台回收 slirp 的 hostfwd 监听套接字，回收后客机仍在运行，但端口没人应答。宿主经 QMP 的 `hostfwd_remove/add` 原地重建转发，客机不用重启。
+
+## 组件边界
+
+- QEMU 编成独立的动态框架，宿主用 `dlopen` 加载，只调用 `qemu_init(argc, argv)` 和 `qemu_main_loop()` 两个入口。
+- 两者之间只通过 QMP 管道和网络端口转发通信。宿主不调用 QEMU 的内部函数，也不把自己的代码编进 QEMU。
+- 客机里的程序只经网络和 9p 与宿主交互。
+
+Pallas Agent 的应用代码不在本仓库，也不受下列许可证约束。
+
+## 仓库内容
 
 | 位置 | 内容 |
 |---|---|
 | [Releases](../../releases) | 每个组件的上游源码包原样镜像，`SHA256SUMS` 可用来核对 |
-| [`qemu/`](qemu) | 我们对 QEMU 的修改：`qemu-tcti-compare.patch` 和等价的二进制修补脚本 `tcti_fix.py`；随 App 分发的许可清单 `UTM-Licenses.plist` |
-| [`qemu/utm-patches/`](qemu/utm-patches) | UTM 5.0.8 发布时用的构建脚本、依赖清单和补丁，取自 UTM 的 [v5.0.8 标签](https://github.com/utmapp/UTM/tree/v5.0.8) |
-| [`guest/`](guest) | Linux 客户机的内核、busybox 和 Ubuntu 软件包清单 |
+| [`qemu/`](qemu) | TCTI 修复的源码补丁与二进制修补脚本；随 App 分发的许可清单 `UTM-Licenses.plist` |
+| [`qemu/utm-patches/`](qemu/utm-patches) | UTM 5.0.8 的构建脚本、依赖清单和补丁（[v5.0.8 标签](https://github.com/utmapp/UTM/tree/v5.0.8)） |
+| [`guest/`](guest) | 客机所用 Ubuntu 源码包的名称与确切版本 |
 | [`scripts/`](scripts) | 从 Launchpad 重新下载全部 Ubuntu 源码包的脚本 |
 | [`licenses/`](licenses) | GPL-2.0、LGPL-2.1 原文和 QEMU 的许可说明 |
 
@@ -73,12 +147,6 @@ mkdir -p build-iOS-TCI-arm64 && cp ../*.tar.* build-iOS-TCI-arm64/
 系统盘共涉及 78 个 Ubuntu 源码包，名称和确切版本见 [`guest/source-packages.txt`](guest/source-packages.txt)。每个包的 `.dsc`、原始源码和 Debian 补丁都打成一个 `ubuntu-<包名>_<版本>.tar`，放在 Releases 里。也可以运行 `python3 scripts/fetch-ubuntu-sources.py` 直接从 Launchpad 重新下载。
 
 Linux 客户机里另有 Node.js、Python、ripgrep 等组件，许可证都是 MIT、PSF、Apache 这类宽松许可证，许可文本随 App 一起分发在客户机里。
-
-## 组件边界
-
-- QEMU 编成独立的动态框架，App 用 `dlopen` 加载，只调用 `qemu_init(argc, argv)` 和 `qemu_main_loop()`。
-- App 与 QEMU 之间只通过 QMP（JSON 命令）管道和网络端口转发通信，App 不调用 QEMU 的内部函数，也不把自己的代码编进 QEMU。
-- Linux 里的程序运行在虚拟机中，跟 App 之间只有网络和 9p 文件共享。
 
 ## 索取源码
 
