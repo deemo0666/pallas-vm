@@ -52,7 +52,7 @@ User-mode emulation is lighter and has no boot at all; full-system emulation buy
 ## What we changed, layer by layer
 
 ### TCG interpreter (QEMU)
-- **Vector-compare fix in iOS-TCI.** Upstream swaps the gadgets for the LT/LE and LTU/LEU pairs in `INDEX_op_cmp_vec`, so a guest `cmlt v, #0` is true for zero elements. Rust's SwissTable `HashMap` then silently loses entries and ripgrep crashes. Fixed at source level ([`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)) and, equivalently, by swapping 4 entries (8 bytes) in the compiled gadget branch table ([`qemu/tcti_fix.py`](qemu/tcti_fix.py)).
+- **Vector-compare fix in iOS-TCI.** Upstream swaps the gadgets for the LT/LE and LTU/LEU pairs in `INDEX_op_cmp_vec`, so a guest `cmlt v, #0` is true for zero elements. Rust's SwissTable `HashMap` then silently loses entries and ripgrep crashes. Fixed at source level ([`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)) and, equivalently, by swapping 4 entries (8 bytes) in the compiled gadget branch table ([`qemu/tcti_fix.py`](qemu/tcti_fix.py)). We found this bug independently; upstream has fixed it in [ed597a6](https://github.com/utmapp/qemu/commit/ed597a6131bb344a566b92ecba5804b308ec5e7b).
 - **192 MiB translation-block cache**, so hot code is translated once per session instead of being evicted.
 - **2 vCPUs**, matched to the phone's performance cores.
 

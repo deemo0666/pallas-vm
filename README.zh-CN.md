@@ -52,7 +52,7 @@ iOS 禁止普通 App 生成可执行代码（W^X、没有 `MAP_JIT`）。Pallas 
 ## 逐层改动
 
 ### TCG 解释器（QEMU）
-- **修复 iOS-TCI 的向量比较。** 上游在 `INDEX_op_cmp_vec` 里把 LT/LE、LTU/LEU 两对条件的 gadget 写反，客机的 `cmlt v, #0` 对零元素给出真，Rust 的 SwissTable `HashMap` 因此悄悄丢元素，ripgrep 随机崩溃。修复有源码补丁（[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)），也有等价的二进制修补：在已编译的 gadget 分支表里交换 4 个表项、共 8 字节（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)）。
+- **修复 iOS-TCI 的向量比较。** 上游在 `INDEX_op_cmp_vec` 里把 LT/LE、LTU/LEU 两对条件的 gadget 写反，客机的 `cmlt v, #0` 对零元素给出真，Rust 的 SwissTable `HashMap` 因此悄悄丢元素，ripgrep 随机崩溃。修复有源码补丁（[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)），也有等价的二进制修补：在已编译的 gadget 分支表里交换 4 个表项、共 8 字节（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)）。我们独立发现了这个 bug，上游已在 [ed597a6](https://github.com/utmapp/qemu/commit/ed597a6131bb344a566b92ecba5804b308ec5e7b) 中修复。
 - **192 MiB 翻译块缓存**，热代码一次会话只翻译一次，不会被挤出。
 - **2 个 vCPU**，对应手机的性能核。
 
