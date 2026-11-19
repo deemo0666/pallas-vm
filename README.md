@@ -32,6 +32,24 @@ Measured on iPhone, interpreter only, no JIT.
 
 Profiling showed instruction translation is under 5% of the cost; 9p round trips and boot work dominate. Every change below attacks one of those.
 
+## Compared with iSH
+
+[iSH](https://github.com/ish-app/ish) pioneered Linux on iOS without JIT, and its threaded-code ("gadget") interpreter is the same family of technique. The two make opposite architectural choices:
+
+| | iSH | Pallas VM |
+|---|---|---|
+| Emulation model | User-mode: runs Linux binaries, translates syscalls to XNU | Full system: a real Linux kernel on an emulated `virt` machine |
+| Guest ISA | 32-bit x86 (i386) | **64-bit aarch64**, the same ISA as the iPhone |
+| Kernel | Reimplemented syscall layer | **Unmodified Linux 6.12** |
+| Userland | Alpine i386 (musl) | **Ubuntu 24.04 arm64 (glibc)**: official arm64 builds of Node.js, Python, Rust tools run as is |
+| 64-bit programs | Not supported | Supported |
+| Kernel features (namespaces, cgroups, ext4, 9p, bubblewrap sandboxing) | Only what the syscall layer reimplements | Whatever Linux has |
+| SMP | Guest threads share one emulator | 2 vCPUs |
+| Start-up | No kernel to boot | Whole-machine snapshot, ~1.6 s |
+| Integration | Standalone terminal app | Embedded runtime driven by an agent over QMP and loopback services |
+
+User-mode emulation is lighter and has no boot at all; full-system emulation buys compatibility: a real kernel means real semantics, and an arm64 guest means the modern toolchain ecosystem works without 32-bit x86 ports.
+
 ## What we changed, layer by layer
 
 ### TCG interpreter (QEMU)
