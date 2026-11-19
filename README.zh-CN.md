@@ -44,7 +44,6 @@ iOS 禁止普通 App 生成可执行代码（W^X、没有 `MAP_JIT`）。Pallas 
 | 用户态 | Alpine i386（musl） | **Ubuntu 24.04 arm64（glibc）**：Node.js、Python、Rust 工具的官方 arm64 构建直接可用 |
 | 64 位程序 | 不支持 | 支持 |
 | 内核特性（namespace、cgroup、ext4、9p、bubblewrap 沙箱） | 只有系统调用层重新实现的部分 | Linux 有的都有 |
-| 多核 | 客机线程共用一个模拟器 | 2 个 vCPU |
 | 启动 | 没有内核要启动 | 整机快照，约 1.6 s |
 | 集成方式 | 独立的终端 App | 嵌入式运行时，由智能体经 QMP 和回环服务驱动 |
 

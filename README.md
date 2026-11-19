@@ -44,7 +44,6 @@ Profiling showed instruction translation is under 5% of the cost; 9p round trips
 | Userland | Alpine i386 (musl) | **Ubuntu 24.04 arm64 (glibc)**: official arm64 builds of Node.js, Python, Rust tools run as is |
 | 64-bit programs | Not supported | Supported |
 | Kernel features (namespaces, cgroups, ext4, 9p, bubblewrap sandboxing) | Only what the syscall layer reimplements | Whatever Linux has |
-| SMP | Guest threads share one emulator | 2 vCPUs |
 | Start-up | No kernel to boot | Whole-machine snapshot, ~1.6 s |
 | Integration | Standalone terminal app | Embedded runtime driven by an agent over QMP and loopback services |
 
