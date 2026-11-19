@@ -15,11 +15,51 @@
   <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
 </p>
 
-Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallasai) 的执行层：智能体在 iPhone 上要跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
+Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallasai) 的执行层：智能体在 iPhone 上跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
 
-iOS 不允许普通 App 生成可执行代码（W^X、没有 `MAP_JIT`），常规动态二进制翻译走不通。Pallas VM 在 QEMU 的 TCG 前端之后接 **iOS-TCI 线程代码后端**：客机指令先翻译成 TCG IR，再编排成预编译 gadget 的地址链，由一个间接跳转循环执行。全程只读写数据，不产生新的机器码。
+iOS 禁止普通 App 生成可执行代码（W^X、没有 `MAP_JIT`）。Pallas VM 在 QEMU 的 TCG 前端之后接 **iOS-TCI 线程代码后端**：客机指令先翻成 TCG IR，再编排成预编译 gadget 的地址链，由间接跳转循环执行，全程只写数据。
 
-本仓库收录 Pallas VM 的全部底层修改，以及它所含 GPL/LGPL 组件的完整对应源码。
+## 性能
+
+均在 iPhone 实测，纯解释执行，无 JIT。
+
+| | 原始配置 | Pallas VM |
+|---|---|---|
+| 冷启动到能执行命令 | 28 s | **11 s** |
+| 从保存的整机状态启动 | — | **约 1.6 s** |
+| 在工作区里跑 `rg` / `grep` / `find` | 客机内，经 9p | **宿主原生执行，输出一致** |
+| 用 SIMD 哈希表的 Rust 程序 | 随机崩溃 | **正确**（TCTI 修复） |
+
+性能剖析显示指令翻译只占不到 5%，大头是 9p 往返和启动开销。下面每一项改动都针对其中之一。
+
+## 逐层改动
+
+### TCG 解释器（QEMU）
+- **修复 iOS-TCI 的向量比较。** 上游在 `INDEX_op_cmp_vec` 里把 LT/LE、LTU/LEU 两对条件的 gadget 写反，客机的 `cmlt v, #0` 对零元素给出真，Rust 的 SwissTable `HashMap` 因此悄悄丢元素，ripgrep 随机崩溃。修复有源码补丁（[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)），也有等价的二进制修补：在已编译的 gadget 分支表里交换 4 个表项、共 8 字节（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)）。
+- **192 MiB 翻译块缓存**，热代码一次会话只翻译一次，不会被挤出。
+- **2 个 vCPU**，对应手机的性能核。
+
+### 机器与启动
+- **整机快照。** 在「guest 服务已监听、工作区未挂载」这一刻经 QMP 保存整机（约 115 MB），之后每次启动用 `loadvm` 恢复。
+- **快照有效性校验。** 内核、initramfs、工具盘按内容哈希，QEMU 和宿主框架按链接标识，系统盘按尺寸和时间，状态文件按校验和，全部一致才用快照；否则冷启动并重存，载入失败当场复位。
+- **所有权限档下根文件系统都只读**，`/tmp`、`/run` 在内存里，快照和磁盘永远一致。
+- **端口转发自愈。** iOS 在后台回收 slirp 的 hostfwd 套接字后，宿主经 QMP（`hostfwd_remove/add`）原地重建，客机不重启。
+
+### 内核与 initramfs
+- **定制 initramfs**：只有 busybox 和固定顺序加载的 15 个模块（virtio-mmio、blk、net、ext4、9p、fw_cfg 等），并且**不压缩**，被模拟的内核不用花时间解压；原厂 initramfs 带了约 20 MB 用不上的驱动。
+- **经 fw_cfg 传一次性启动密钥**：读一次就卸载 `qemu_fw_cfg` 驱动，再通过文件描述符交出，不出现在命令行、环境变量或磁盘上。
+- **恢复时重置内核随机数**，多次恢复不会共享熵状态。
+
+### 用户态
+- **只读工具盘上的预编译缓存**：guest 服务和 npm 的 V8 代码缓存、Python 标准库的 `.pyc`、CA 证书、ripgrep，都在制作镜像时用同一个内核启动生成。
+- **npm 和 guest 服务用 esbuild 打成单文件**，少用的模块延迟加载。
+- **稀疏 home 盘**，inode 表不预先初始化（`noinit_itable`），写多少长多少。
+- **bubblewrap 沙箱丢弃全部 capability**：命令不能重挂根、加载模块或读其他进程。
+
+### 宿主集成
+- **原生卸载**：`rg`、`grep`、`find`、`sha*sum` 被识别后在宿主进程里用 ripgrep 自己的库执行，完全绕开 9p。
+- **图片在宿主解码**：附件图片用 ImageIO 在宿主处理，不进客机。
+- guest 服务只接受来自 slirp 网关 `10.0.2.2`、带当前启动密钥的连接。
 
 ## 架构
 
@@ -29,9 +69,10 @@ iOS 不允许普通 App 生成可执行代码（W^X、没有 `MAP_JIT`），常�
 │     │                       qemu_init(argv) / qemu_main_loop()            │
 │     ├── QMP（JSON over pipe）：快照、端口转发、状态                          │
 │     ├── slirp hostfwd：guest 服务 ⇄ 回环端口                               │
+│     ├── 原生卸载：rg / grep / find 在宿主执行                              │
 │     └── fw_cfg：一次性启动密钥                                             │
 │                                                                           │
-│   ┌──────────────── virt 机器 · 2 × vCPU─────────────────┐        │
+│   ┌──────────────────── virt 机器 · 2 × vCPU ─────────────────────┐        │
 │   │ Linux 6.12 virt ── virtio-mmio: blk ×3 · net · 9p · fw_cfg    │        │
 │   │ initramfs（busybox，未压缩）→ 只读 ext4 根（Ubuntu 24.04）       │        │
 │   │ bubblewrap 沙箱（--cap-drop ALL）· tmpfs /tmp · 独立 /root 盘   │        │
@@ -39,46 +80,9 @@ iOS 不允许普通 App 生成可执行代码（W^X、没有 `MAP_JIT`），常�
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 底层工作
-
-### 1. TCTI 向量比较 bug（指令级修复）
-
-上游 `tcg/aarch64-tcti/tcg-target.c.inc` 在 `INDEX_op_cmp_vec` 里把 **LT/LE**、**LTU/LEU** 两对条件对应的 gadget 写反了。后果是客机执行 `cmlt v, #0` 时，值恰好为 0 的元素也被判成真。
-
-这种错误平时看不出来，直到碰上 SIMD 哈希表：Rust `HashMap`（SwissTable）用向量比较匹配控制字节组，比较一出错就会悄悄丢元素，ripgrep 这类程序随机崩溃。
-
-我们在客机里稳定复现后，从翻译结果回溯到 gadget 选择表，定位了这处错误：
-- 源码层面：[`qemu/qemu-tcti-compare.patch`](qemu/qemu-tcti-compare.patch)，把 `cmgt`/`cmge`、`cmhi`/`cmhs` 两两互换；
-- 二进制层面：在已编译的分支表里交换 4 个表项，共 **8 字节**（[`qemu/tcti_fix.py`](qemu/tcti_fix.py)），与改源码等价，不必重编整个 QEMU。
-
-### 2. 整机快照：冷启动 11 s → 恢复 1.6 s
-
-纯解释执行下，Linux 冷启动最初要 28 s。经过下面这些优化压到约 11 s：
-- initramfs 只留 busybox 和 15 个必需模块，并且不压缩，免得在模拟器里解压；
-- vCPU 增加到 2 个；
-- TCG 翻译缓存调到 192 MiB。
-
-之后，在「guest 服务已监听、工作区尚未挂载」这一刻，经 QMP 把整机状态存成约 115 MB 的快照，以后每次直接 `loadvm`，约 **1.6 s** 就能执行命令。
-
-快照只在来源全部未变时才用：内核、initramfs、工具盘按内容哈希，QEMU 和宿主框架按链接标识，系统盘按尺寸和时间，状态文件按校验和。任何一项不符就冷启动并重存；载入失败当场复位。为保证快照一致，根文件系统在所有权限档下都只读挂载。
-
-### 3. 启动密钥与隔离
-
-- 每次启动生成随机密钥。冷启动时经 **fw_cfg** 传入，initramfs 读取一次后立即卸载 `qemu_fw_cfg` 驱动，再通过文件描述符交给服务；密钥不出现在内核命令行、环境变量或任何文件里。
-- 从快照恢复时，用旧密钥通过 `/resume` 换新密钥，同时重置内核随机数种子，避免多次恢复得到相同的熵状态。
-- guest 服务只接受来自 slirp 网关 `10.0.2.2` 的连接。命令运行在 bubblewrap 里并丢弃全部 capability，不能重挂根、加载模块或读别的进程。
-
-### 4. 宿主卸载
-
-TCTI 下的开销主要不在指令翻译（不到 5%），而在 9p 文件访问的往返延迟。所以 `rg`、`grep`、`find`、`sha*sum` 这些遍历文件的命令会被识别出来，改在宿主进程里用 ripgrep 的库原生执行，输出跟客机里运行完全一致。
-
-### 5. 网络自愈
-
-iOS 会在后台回收 slirp 的 hostfwd 监听套接字，回收后客机仍在运行，但端口没人应答。宿主经 QMP 的 `hostfwd_remove/add` 原地重建转发，客机不用重启。
-
 ## 组件边界
 
-- QEMU 编成独立的动态框架，宿主用 `dlopen` 加载，只调用 `qemu_init(argc, argv)` 和 `qemu_main_loop()` 两个入口。
+- QEMU 编成独立的动态框架，宿主用 `dlopen` 加载，只调用 `qemu_init(argc, argv)` 和 `qemu_main_loop()`。
 - 两者之间只通过 QMP 管道和网络端口转发通信。宿主不调用 QEMU 的内部函数，也不把自己的代码编进 QEMU。
 - 客机里的程序只经网络和 9p 与宿主交互。
 
