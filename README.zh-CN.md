@@ -15,7 +15,7 @@
   <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
 </p>
 
-Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallasai) 的执行层：智能体在 iPhone 上跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
+Pallas VM 是 [Pallas Agent](https://github.com/deemo0666/pallas-agent) 的执行层：智能体在 iPhone 上跑的 shell、Python、npm、git，都在这台 App 进程内的虚拟机里完成。不越狱、不借助外部服务器，也不需要 JIT 授权。
 
 iOS 禁止普通 App 生成可执行代码（W^X、没有 `MAP_JIT`）。Pallas VM 在 QEMU 的 TCG 前端之后接 **iOS-TCI 线程代码后端**：客机指令先翻成 TCG IR，再编排成预编译 gadget 的地址链，由间接跳转循环执行，全程只写数据。
 
@@ -171,7 +171,7 @@ Linux 客户机里另有 Node.js、Python、ripgrep 等组件，许可证都是 
 
 ## 作者与许可
 
-Pallas VM 由 [deemo0666](https://github.com/deemo0666) 为 [Pallas Agent](https://github.com/deemo0666/pallasai) 设计和实现，包括上文的 TCTI 修复、快照恢复、原生分流和客户机构建流程。
+Pallas VM 由 [deemo0666](https://github.com/deemo0666) 为 [Pallas Agent](https://github.com/deemo0666/pallas-agent) 设计和实现，包括上文的 TCTI 修复、快照恢复、原生分流和客户机构建流程。
 
 使用其中任何部分，请保留版权声明，并注明 **「Pallas VM by deemo0666 (Pallas Agent)」** 和本仓库链接。我们的 QEMU 补丁是 GPL-2.0，脚本是 MIT，文档是 CC BY 4.0，详见 [LICENSE](LICENSE)。Pallas 名称和 logo 不在授权范围内。
 

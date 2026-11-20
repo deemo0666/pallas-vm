@@ -15,7 +15,7 @@
   <img alt="Resume" src="https://img.shields.io/badge/resume-~1.6%20s-green">
 </p>
 
-Pallas VM is the execution layer of [Pallas Agent](https://github.com/deemo0666/pallasai). The shell, Python, npm and git that the agent runs on an iPhone all run in this virtual machine, inside the app's own process. No jailbreak, no remote server, no JIT entitlement.
+Pallas VM is the execution layer of [Pallas Agent](https://github.com/deemo0666/pallas-agent). The shell, Python, npm and git that the agent runs on an iPhone all run in this virtual machine, inside the app's own process. No jailbreak, no remote server, no JIT entitlement.
 
 iOS forbids ordinary apps from generating executable code (W^X, no `MAP_JIT`). Pallas VM puts QEMU's TCG front end in front of the **iOS-TCI threaded-code back end**: guest instructions become TCG IR, then chains of addresses of precompiled gadgets that an indirect-branch loop executes. Only data is ever written.
 
@@ -171,7 +171,7 @@ The guest also carries Node.js, Python, ripgrep and similar components under per
 
 ## Author and license
 
-Pallas VM is designed and built by [deemo0666](https://github.com/deemo0666) for [Pallas Agent](https://github.com/deemo0666/pallasai): the TCTI fix, the snapshot-resume path, the native offload and the guest pipeline described above.
+Pallas VM is designed and built by [deemo0666](https://github.com/deemo0666) for [Pallas Agent](https://github.com/deemo0666/pallas-agent): the TCTI fix, the snapshot-resume path, the native offload and the guest pipeline described above.
 
 If you use any of it, keep the copyright notices and credit **"Pallas VM by deemo0666 (Pallas Agent)"** with a link to this repository. Our QEMU patch is GPL-2.0, our scripts are MIT, and this documentation is CC BY 4.0; see [LICENSE](LICENSE). The Pallas name and logo are not licensed.
 
